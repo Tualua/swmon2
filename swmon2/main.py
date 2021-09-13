@@ -1,10 +1,16 @@
-from fastapi import FastAPI
+from fastapi import (
+    FastAPI,
+    Depends
+)
+from starlette.background import BackgroundTask
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import (
     Response,
     JSONResponse
 )
-from puresnmp.aio.api.pythonic import (bulkwalk)
+from puresnmp.aio.api.pythonic import (
+    bulkwalk
+)
 from collections import (
     ChainMap,
     defaultdict
@@ -15,17 +21,52 @@ import asyncio
 import json
 import typing
 import urllib.request
+import aiohttp
+
+
+class HttpClient:
+    session: aiohttp.ClientSession = None
+
+    def start(self):
+        self.session = aiohttp.ClientSession()
+
+    async def stop(self):
+        await self.session.close()
+        self.session = None
+
+    def __call__(self) -> aiohttp.ClientSession:
+        assert self.session is not None
+        return self.session
+
+
+http_client = HttpClient()
 
 
 class PrettyJSONResponse(Response):
     media_type = "application/json"
 
-    def render(self, content: typing.Any) -> bytes:
+    def __init__(
+        self,
+        content: typing.Any = None,
+        indent: int = None,
+        status_code: int = 200,
+        headers: dict = None,
+        media_type: str = None,
+        background: BackgroundTask = None,
+    ) -> None:
+        self.status_code = status_code
+        if media_type is not None:
+            self.media_type = media_type
+        self.background = background
+        self.body = self.render(content, indent)
+        self.init_headers(headers)
+
+    def render(self, content: typing.Any, indent: int) -> bytes:
         return json.dumps(
             content,
             ensure_ascii=False,
             allow_nan=False,
-            indent=None,
+            indent=indent,
             separators=(",", ":"),
         ).encode("utf-8")
 
@@ -54,6 +95,24 @@ def get_kea_dhcp4_leases(ipaddress, port):
     result = defaultdict(def_value)
     data = invoke_kea_command(ipaddress, port, "lease4-get-all", "dhcp4")
     leases = data[0]['arguments']['leases']
+    for lease in leases:
+        result[lease['hw-address'].upper()] = lease['ip-address']
+    return result
+
+
+async def get_kea_dhcp4_leases_a(ipaddress, port, http_client):
+    result = defaultdict(def_value)
+    headers = {}
+    content = '{ "command": "' + "lease4-get-all" + '"'
+    content += ', "service": ["' "dhcp4" + '"]'
+    content += ' }'
+    headers['Content-Type'] = 'application/json'
+
+    req = await http_client.post(
+        url=f"http://{ipaddress}:{port}",
+        data=str.encode(content), headers=headers)
+    resp = await req.json()
+    leases = resp[0]['arguments']['leases']
     for lease in leases:
         result[lease['hw-address'].upper()] = lease['ip-address']
     return result
@@ -95,14 +154,15 @@ async def get_vlan_fdb(ipaddress, community, vlan, mappings):
     vlan_fdb = [
         (
             portnumber(mappings[m.value], 48),
-            ":".join(["{:02X}".format(int(octet)) for octet in m.oid[-6:]])
+            ":".join(["{:02X}".format(int(octet)) for octet in m.oid[-6:]]),
+            vlan
         ) async for m in bulkwalk(
             ipaddress, "@".join([community, str(vlan)]), dot1dTpFdbPort)
     ]
     return vlan_fdb
 
 
-async def get_fdb(ipaddress, community, vlans, mappings):
+async def get_fdb_cisco(ipaddress, community, vlans, mappings):
     tasks = [
         get_vlan_fdb(
             ipaddress, community, vlan, mappings
@@ -112,13 +172,30 @@ async def get_fdb(ipaddress, community, vlans, mappings):
     res = [item for sublist in res for item in sublist]
     return sorted(res, key=lambda x: x[0])
 
+
+async def get_fdb_dlink(ipaddress, community):
+    oiddot1qTpFdbEntry = ['.1.3.6.1.2.1.17.7.1.2.2.1.2']
+    res = [
+                (int(m.value), ":".join(
+                    ["{:02X}".format(int(octet)) for octet in m.oid[-6:]]),
+                    int(m.oid[-7]))
+                async for m in bulkwalk(
+                    ipaddress, community, oiddot1qTpFdbEntry)]
+    return sorted(res, key=lambda x: x[0])
+
+
 app = FastAPI()
 
 
-@app.get("/fdb/{sw_num}")
-async def fdb(sw_num):
-    leases = get_kea_dhcp4_leases(settings.kea_ipaddr, settings.kea_api_port)
+@app.on_event("startup")
+async def startup():
+    http_client.start()
+
+
+@app.get("/cisco/{sw_num}")
+async def fdb_cisco(sw_num):
     start_time = time.time()
+    leases = get_kea_dhcp4_leases(settings.kea_ipaddr, settings.kea_api_port)
     vtpVlanState = ['.1.3.6.1.4.1.9.9.46.1.3.1.1.2.1']
     oidifName = ['.1.3.6.1.2.1.31.1.1.1.1']
     ipaddress = f'172.17.17.{sw_num}'
@@ -132,19 +209,59 @@ async def fdb(sw_num):
     }
     swMappings = await get_mappings(ipaddress, community, swVlans)
     swMappings = {k: swIfNames[v] for k, v in swMappings.items()}
-    swFDB = await get_fdb(ipaddress, community, swVlans, swMappings)
-    devices = [[fdb[0], leases[fdb[1]], fdb[1]] for fdb in swFDB]
+    swFDB = await get_fdb_cisco(ipaddress, community, swVlans, swMappings)
+    devices = [{
+        "port": fdb[0],
+        "ipaddr": leases[fdb[1]],
+        "macaddr": fdb[1],
+        "vlan": fdb[2]}
+        for fdb in swFDB if fdb[0] <= 48]
     end_time = time.time()
     result = jsonable_encoder({
-        "start_time": start_time,
-        "end_time": end_time,
-        "elapsed_time": end_time - start_time,
-        "data": devices
+        "data": devices,
+        "exec_time": end_time - start_time,
     })
-    return PrettyJSONResponse(content=result)
+    return PrettyJSONResponse(content=result, indent=4)
+
+
+@app.get("/dlink/{sw_num}")
+async def fdb_dkink(sw_num):
+    start_time = time.time()
+    leases = get_kea_dhcp4_leases(settings.kea_ipaddr, settings.kea_api_port)
+    ipaddress = f'172.17.17.{sw_num}'
+    community = settings.snmp_community
+    swFDB = await get_fdb_dlink(ipaddress, community)
+    devices = [{
+        "port": fdb[0],
+        "ipaddr": leases[fdb[1]],
+        "macaddr": fdb[1],
+        "vlan": fdb[2]}
+        for fdb in swFDB if fdb[0] <= 48 and fdb[0] >= 1]
+    end_time = time.time()
+    result = jsonable_encoder({
+        "data": devices,
+        "exec_time": end_time - start_time,
+    })
+    return PrettyJSONResponse(content=result, indent=4)
 
 
 @app.get("/kea")
 async def kea():
     leases = get_kea_dhcp4_leases(settings.kea_ipaddr, settings.kea_api_port)
     return JSONResponse(content=leases)
+
+
+@app.get("/akea")
+async def akea(http_client: aiohttp.ClientSession = Depends(http_client)):
+    headers = {}
+    content = '{ "command": "' + "lease4-get-all" + '"'
+    content += ', "service": ["' "dhcp4" + '"]'
+    content += ' }'
+    headers['Content-Type'] = 'application/json'
+
+    req = await http_client.post(
+        url=f"http://{settings.kea_ipaddr}:{settings.kea_api_port}",
+        data=str.encode(content), headers=headers)
+    resp = await req.json()
+    leases = resp[0]['arguments']['leases']
+    return PrettyJSONResponse(leases, indent=4)
