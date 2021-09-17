@@ -218,14 +218,14 @@ async def fdb_cisco(sw_num):
         for fdb in swFDB if fdb[0] <= 48]
     end_time = time.time()
     result = jsonable_encoder({
-        "data": devices,
+        "fdb": devices,
         "exec_time": end_time - start_time,
     })
     return PrettyJSONResponse(content=result, indent=4)
 
 
 @app.get("/dlink/{sw_num}")
-async def fdb_dkink(sw_num):
+async def fdb_dlink(sw_num):
     start_time = time.time()
     leases = get_kea_dhcp4_leases(settings.kea_ipaddr, settings.kea_api_port)
     ipaddress = f'172.17.17.{sw_num}'
@@ -239,7 +239,7 @@ async def fdb_dkink(sw_num):
         for fdb in swFDB if fdb[0] <= 48 and fdb[0] >= 1]
     end_time = time.time()
     result = jsonable_encoder({
-        "data": devices,
+        "fdb": devices,
         "exec_time": end_time - start_time,
     })
     return PrettyJSONResponse(content=result, indent=4)
