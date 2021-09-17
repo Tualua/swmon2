@@ -1,15 +1,22 @@
+aiohttp==3.7.4.post0
 asgiref==3.4.1
+async-timeout==3.0.1
+attrs==21.2.0
 certifi==2021.5.30
+chardet==4.0.0
 charset-normalizer==2.0.4
 click==8.0.1
 fastapi==0.68.1
+flake8==3.9.2
 h11==0.12.0
 idna==3.2
 mccabe==0.6.1
+multidict==5.1.0
 puresnmp==1.11.0
 pycodestyle==2.7.0
 pydantic==1.8.2
 pyflakes==2.3.1
+requests==2.26.0
 six==1.16.0
 starlette==0.14.2
 t61codec==2.0.0
@@ -17,3 +24,4 @@ typing-extensions==3.10.0.2
 urllib3==1.26.6
 uvicorn==0.15.0
 verlib==0.1
+yarl==1.6.3
