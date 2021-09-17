@@ -3,6 +3,7 @@ from fastapi import (
     Depends
 )
 from starlette.background import BackgroundTask
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import (
     Response,
@@ -185,6 +186,16 @@ async def get_fdb_dlink(ipaddress, community):
 
 
 app = FastAPI()
+
+origins = ['*']
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.on_event("startup")
