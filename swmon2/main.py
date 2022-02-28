@@ -23,6 +23,10 @@ import json
 import typing
 import urllib.request
 import aiohttp
+import ssl
+from librouteros import connect
+from librouteros.login import plain
+from librouteros.query import Key
 
 
 class HttpClient:
@@ -74,6 +78,39 @@ class PrettyJSONResponse(Response):
 
 def def_value():
     return "Not Present"
+
+
+def get_ros_dhcp_leases(ipaddress, port, username, password):
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+
+    method = plain
+
+    api = connect(
+        username=username,
+        password=password,
+        host=ipaddress,
+        ssl_wrapper=ctx.wrap_socket,
+        port=port,
+        login_method=method
+    )
+    ipaddress = Key('active-address')
+    macaddress = Key('mac-address')
+    hostname = Key('host-name')
+    status = Key('status')
+    data = api.path('/ip/dhcp-server/lease').select(
+        ipaddress, macaddress, hostname).where(status == 'bound')
+    """
+    leases = (
+        (l['mac-address'], l['active-address'], l['host-name'])
+        if 'host-name' in l.keys() else (
+            l['mac-address'], l['active-address'], '') for l in data)
+    """
+    result = defaultdict(def_value)
+    for lease in data:
+        result[lease["mac-address"].upper()] = lease["active-address"]
+    return result
 
 
 def invoke_kea_command(ipaddress, port, command, service):
@@ -206,6 +243,7 @@ async def startup():
 @app.get("/cisco/{sw_num}")
 async def fdb_cisco(sw_num):
     start_time = time.time()
+    devices = {}
     leases = get_kea_dhcp4_leases(settings.kea_ipaddr, settings.kea_api_port)
     vtpVlanState = ['.1.3.6.1.4.1.9.9.46.1.3.1.1.2.1']
     oidifName = ['.1.3.6.1.2.1.31.1.1.1.1']
@@ -221,17 +259,80 @@ async def fdb_cisco(sw_num):
     swMappings = await get_mappings(ipaddress, community, swVlans)
     swMappings = {k: swIfNames[v] for k, v in swMappings.items()}
     swFDB = await get_fdb_cisco(ipaddress, community, swVlans, swMappings)
+    for iface in range(1, 49):
+        devices[iface] = {
+            "ipaddr": "Not Found",
+            "macaddr": "Not Found",
+            "vlan": "Not Found"
+        }
+
+    for fdb in swFDB:
+        if fdb[0] <= 48:
+            devices[fdb[0]] = {
+                "ipaddr": leases[fdb[1]],
+                "macaddr": fdb[1],
+                "vlan": fdb[2]
+            }
+
+    """
     devices = [{
         "port": fdb[0],
         "ipaddr": leases[fdb[1]],
         "macaddr": fdb[1],
         "vlan": fdb[2]}
         for fdb in swFDB if fdb[0] <= 48]
+    """
     end_time = time.time()
     result = jsonable_encoder({
         "fdb": devices,
         "exec_time": end_time - start_time,
     })
+
+    return PrettyJSONResponse(content=result, indent=4)
+
+
+@app.get("/narva/{sw_num}")
+async def fdb_cisco_narva(sw_num):
+    start_time = time.time()
+    devices = {}
+    leases = get_ros_dhcp_leases(
+        settings.narva_ros_addr, settings.narva_ros_port,
+        settings.narva_dhcp_username, settings.narva_dhcp_password)
+    vtpVlanState = ['.1.3.6.1.4.1.9.9.46.1.3.1.1.2.1']
+    oidifName = ['.1.3.6.1.2.1.31.1.1.1.1']
+    ipaddress = f'172.18.17.{sw_num}'
+    # uplinkports = []
+    community = settings.snmp_community
+    swIfaces = bulkwalk(ipaddress, community, oidifName)
+    swVlans = {int(vlan.oid[-1]) async for vlan in bulkwalk(
+        ipaddress, community, vtpVlanState)}
+    swIfNames = {
+        int(i.oid[-1]): i.value.decode('utf-8') async for i in swIfaces
+    }
+    swMappings = await get_mappings(ipaddress, community, swVlans)
+    swMappings = {k: swIfNames[v] for k, v in swMappings.items()}
+    swFDB = await get_fdb_cisco(ipaddress, community, swVlans, swMappings)
+    for iface in range(1, 49):
+        devices[iface] = {
+            "ipaddr": "Not Found",
+            "macaddr": "Not Found",
+            "vlan": "Not Found"
+        }
+
+    for fdb in swFDB:
+        if fdb[0] <= 48:
+            devices[fdb[0]] = {
+                "ipaddr": leases[fdb[1]],
+                "macaddr": fdb[1],
+                "vlan": fdb[2]
+            }
+
+    end_time = time.time()
+    result = jsonable_encoder({
+        "fdb": devices,
+        "exec_time": end_time - start_time,
+    })
+
     return PrettyJSONResponse(content=result, indent=4)
 
 
