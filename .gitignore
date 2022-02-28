@@ -130,6 +130,7 @@ dmypy.json
 .vscode/
 
 # Development config files
+swmon2/config.py
 config.py
 
 #
