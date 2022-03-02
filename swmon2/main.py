@@ -300,12 +300,40 @@ async def fdb_cisco_narva(sw_num):
         settings.narva_dhcp_username, settings.narva_dhcp_password)
     vtpVlanState = ['.1.3.6.1.4.1.9.9.46.1.3.1.1.2.1']
     oidifName = ['.1.3.6.1.2.1.31.1.1.1.1']
-    ipaddress = f'172.18.17.{sw_num}'
+    sw_ip = int(sw_num) if sw_num.isdigit() else None
+    if sw_ip is None:
+        end_time = time.time()
+        result = jsonable_encoder({
+            "fdb": "",
+            "exec_time": end_time - start_time,
+            "error": "wrong switch number"
+        })
+        return PrettyJSONResponse(content=result, indent=4)
+
+    ipaddress = f'172.18.17.{int(sw_num)+10}'
     # uplinkports = []
     community = settings.snmp_community
-    swIfaces = bulkwalk(ipaddress, community, oidifName)
-    swVlans = {int(vlan.oid[-1]) async for vlan in bulkwalk(
-        ipaddress, community, vtpVlanState)}
+    try:
+        swIfaces = bulkwalk(ipaddress, community, oidifName)
+    except Exception as e:
+        end_time = time.time()
+        result = jsonable_encoder({
+            "fdb": "",
+            "exec_time": end_time - start_time,
+            "error": str(e)
+        })
+        return PrettyJSONResponse(content=result, indent=4)
+    try:
+        swVlans = {int(vlan.oid[-1]) async for vlan in bulkwalk(
+            ipaddress, community, vtpVlanState)}
+    except Exception as e:
+        end_time = time.time()
+        result = jsonable_encoder({
+            "fdb": "",
+            "exec_time": end_time - start_time,
+            "error": str(e)
+        })
+        return PrettyJSONResponse(content=result, indent=4)
     swIfNames = {
         int(i.oid[-1]): i.value.decode('utf-8') async for i in swIfaces
     }
