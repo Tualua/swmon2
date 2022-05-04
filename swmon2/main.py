@@ -29,6 +29,12 @@ from librouteros.login import plain
 from librouteros.query import Key
 
 
+# KEA DHCP lease states
+KEA_STATE_DEFAULT = 0
+KEA_STATE_DECLINED = 1
+KEA_STATE_EXPIRED_RECLAIMED = 2
+
+
 class HttpClient:
     session: aiohttp.ClientSession = None
 
@@ -134,7 +140,8 @@ def get_kea_dhcp4_leases(ipaddress, port):
     data = invoke_kea_command(ipaddress, port, "lease4-get-all", "dhcp4")
     leases = data[0]['arguments']['leases']
     for lease in leases:
-        result[lease['hw-address'].upper()] = lease['ip-address']
+        if lease['state'] == KEA_STATE_DEFAULT:
+            result[lease['hw-address'].upper()] = lease['ip-address']
     return result
 
 
